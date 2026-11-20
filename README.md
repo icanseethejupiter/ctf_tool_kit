@@ -28,7 +28,7 @@ Then run `flag_capturer` (or the short `flagcap`). If the command is not found,
 python -m flag_capturer .
 ```
 
-点号表示扫描当前文件夹及其子文件夹。只扫一个文件可以用 `python -m flag_capturer .\dist1.exe`。工具默认识别 SEEKER。自定义前缀只写名字，如 `-p MYTEAM`。PowerShell 出现 `>>` 时按 Ctrl+C 回到命令行。
+点号表示扫描当前文件夹及其子文件夹。只扫一个文件可以用 `python -m flag_capturer .\dist1.exe`。默认识别 flag、CTF 类前缀、HTB 和 THM。自定义前缀只写名字，如 `-p MYTEAM`。PowerShell 出现 `>>` 时按 Ctrl+C 回到命令行。
 
 The static scanner recognizes several MinGW x64 comparison layouts, including checks on separate slices of the input, repeating-key XOR with a known flag prefix, and small integer arrays. It also tries little-endian literals in Intel assembly listings. A hit is a candidate recovered from file contents.
 
@@ -49,7 +49,7 @@ flag_capturer file --json              # for scripts
 - base64 / base64url / base32 / base85 / ascii85, hex, binary, decimal, octal, URL encoding
 - rot13 plus every other Caesar shift, rot47, reversed text
 - single-byte XOR (all 255 keys, checked cheaply against known prefixes first)
-- PE data arrays following a short, zero-padded key on a 16-byte boundary. The scanner tries repeating-key XOR on Base64 text and byte subtraction on flag-shaped text. It recognizes the SEEKER prefix by default.
+- PE data arrays following a short, zero-padded key on a 16-byte boundary. The scanner tries repeating-key XOR on Base64 text and byte subtraction on flag-shaped text.
 - gzip / zlib / bz2 / lzma streams and zip archives
 - cutting base64/hex/binary-looking chunks out of longer text and trying them alone
 

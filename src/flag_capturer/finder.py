@@ -12,7 +12,7 @@ from .decoders import CARVERS, DECODERS, printable_ratio
 from .pe_constants import encoded_constants
 from .fragments import assembly_literals
 
-DEFAULT_PREFIXES = ["flag", "ctf", "htb", "thm", "seeker"]
+DEFAULT_PREFIXES = ["flag", "ctf", "htb", "thm"]
 _BODY = re.compile(rb"\{[^{}\x00-\x1f\x7f-\xff]{1,200}\}")
 _WORD_END = re.compile(rb"[A-Za-z0-9_]{1,20}$")
 # a believable flag: a 3+ letter word (letters/digits/_) then a body with no spaces

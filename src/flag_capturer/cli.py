@@ -88,7 +88,7 @@ def main(argv=None) -> int:
 
     items = [(f"<string {i + 1}>", s.encode()) for i, s in enumerate(a.string)]
     items_iter = list(items) + list(_targets(a.targets, a.max_size * 1024 * 1024))
-    found, maybes = [], []
+    found = []
     if not (a.quiet or a.json):
         print(paint(f"scanning {len(items_iter)} file(s)/string(s) ...", "d"))
     for source, data in items_iter:
@@ -96,7 +96,6 @@ def main(argv=None) -> int:
                    max_nodes=a.max_nodes, xor=not a.no_xor, loose=a.loose)
         hits = f.scan(data, source)
         found += hits
-        maybes += f.maybes()
         if a.json:
             continue
         for h in hits:
@@ -109,15 +108,6 @@ def main(argv=None) -> int:
     if a.json:
         print(json.dumps([{"flag": h.flag, "source": h.source, "chain": h.chain} for h in found],
                          ensure_ascii=False, indent=2))
-    elif not found and maybes:
-        print(paint("[?] no standard flag, but these look like one:", "y"), file=sys.stderr if a.quiet else sys.stdout)
-        for h in maybes[:10]:
-            print(h.flag if a.quiet else paint(f"[?] {h.flag}", "y"))
-            if not a.quiet:
-                print(paint(f"    {h.source}  via  {h.path()}", "d"))
-        pre = maybes[0].flag.split("{")[0]
-        if not a.quiet:
-            print(paint(f"    sure it's one? next time: -p {pre}", "d"))
     elif not found:
         # always say so (on stderr in quiet mode) so silence never looks like a crash
         print(paint("[-] no flag found. try --loose, -p <PREFIX>, or a bigger -d", "y"),
