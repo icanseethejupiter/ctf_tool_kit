@@ -99,7 +99,7 @@ def main():
 
     token = ask_token()
     env = dict(os.environ, TWINE_USERNAME="__token__", TWINE_PASSWORD=token)
-    rc = run(PY, "-m", "twine", "upload", "--non-interactive", *files, env=env).returncode
+    rc = run(PY, "-m", "twine", "upload", "--non-interactive", "--verbose", *files, env=env).returncode
     if rc:
         print("\nUpload failed. If it says the file already exists, bump the version "
               "in pyproject.toml and src/flag_capturer/__init__.py, then run this again.")
