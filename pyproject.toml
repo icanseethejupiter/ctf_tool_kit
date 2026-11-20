@@ -18,7 +18,7 @@ classifiers = [
     "Topic :: Security",
 ]
 dependencies = ["dnfile>=0.18,<0.19", "dncil>=1.0.2,<2", "dpkt>=1.9.8,<2",
-                "capstone>=5,<6", "pyelftools>=0.32,<0.33"]
+                "capstone>=5,<6", "pyelftools>=0.32,<0.33", "pefile>=2023.2.7"]
 
 [project.urls]
 Homepage = "https://github.com/icanseethejupiter/ctf_tool_kit"
