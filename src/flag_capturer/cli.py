@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import sys
@@ -87,13 +88,14 @@ def main(argv=None) -> int:
         print(paint(BANNER.format(v=__version__), "d"))
 
     items = [(f"<string {i + 1}>", s.encode()) for i, s in enumerate(a.string)]
-    items_iter = list(items) + list(_targets(a.targets, a.max_size * 1024 * 1024))
+    items_iter = itertools.chain(items, _targets(a.targets, a.max_size * 1024 * 1024))
     found = []
-    if not (a.quiet or a.json):
-        print(paint(f"scanning {len(items_iter)} file(s)/string(s) ...", "d"))
     for source, data in items_iter:
         f = Finder(prefixes=a.prefix, regex=a.regex, max_depth=a.depth,
                    max_nodes=a.max_nodes, xor=not a.no_xor, loose=a.loose)
+        if not (a.quiet or a.json):
+            label, _ = f.formats.identify(data)
+            print(f"[{label}] {source}")
         hits = f.scan(data, source)
         found += hits
         if a.json:

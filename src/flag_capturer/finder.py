@@ -2,14 +2,12 @@
 from __future__ import annotations
 
 import heapq
-import io
 import itertools
 import re
-import zipfile
 from dataclasses import dataclass, field
 
 from .decoders import CARVERS, DECODERS, printable_ratio
-from .pe_constants import encoded_constants
+from .formats import FORMATS
 from .fragments import assembly_literals
 
 DEFAULT_PREFIXES = ["flag", "ctf", "htb", "thm"]
@@ -57,7 +55,8 @@ class Hit:
 
 class Finder:
     def __init__(self, prefixes=None, regex=None, max_depth=5, max_nodes=20000,
-                 xor=True, loose=False, min_string=6):
+                 xor=True, loose=False, min_string=6, formats=FORMATS):
+        self.formats = formats
         prefixes = [p.rstrip("{") for p in (prefixes or [])]
         self.ctf_like = ("ctf",)
         self.prefix_set = set(DEFAULT_PREFIXES) | {p.lower() for p in prefixes}
@@ -164,11 +163,13 @@ class Finder:
             if is_file and textish and b"mov" in b.lower() and b"0x" in b.lower():
                 for literal in assembly_literals(b):
                     queue.append((literal, chain + ["join little-endian literals"], False, True))
-            if is_file and b.startswith(b"PK\x03\x04"):
-                self._unzip(b, chain, queue)
+            if is_file:
+                _, analyzer = self.formats.identify(b)
+                if analyzer:
+                    parts = analyzer.extract(b, xor=self.xor, prefixes=self.prefix_bytes)
+                    for part in itertools.islice(parts, max(0, self.max_nodes - nodes)):
+                        queue.append((part.data, chain + [part.label], part.nested, True))
             if is_file and not textish:
-                for name, decoded in encoded_constants(b, self.xor, self.prefix_bytes):
-                    queue.append((decoded, chain + [name], False, True))
                 for s in self._strings(b):
                     queue.append((s, chain + ["strings"], False, False))
                 for s in self._utf16(b):
@@ -220,18 +221,6 @@ class Finder:
                     if count >= 64:
                         return
 
-    def _unzip(self, b, chain, queue):
-        try:
-            with zipfile.ZipFile(io.BytesIO(b)) as z:
-                for info in z.infolist()[:200]:
-                    if info.is_dir() or info.file_size > 50 * 1024 * 1024:
-                        continue
-                    try:
-                        queue.append((z.read(info), chain + [f"zip:{info.filename}"], True, True))
-                    except RuntimeError:  # encrypted member
-                        continue
-        except zipfile.BadZipFile:
-            pass
 
 
 def scan_bytes(data: bytes, source: str = "<input>", **kwargs):

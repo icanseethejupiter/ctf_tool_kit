@@ -10,11 +10,18 @@ _TOKEN = re.compile(rb"[A-Za-z0-9+/]{8,}={0,2}")
 _SHIFTED_FLAG = re.compile(rb"[A-Za-z][A-Za-z0-9_]{1,19}\{[ -~]{1,200}?\}")
 
 
-def _sections(blob):
+def pe_header(blob):
     if len(blob) < 64 or blob[:2] != b"MZ":
         return
     offset = struct.unpack_from("<I", blob, 60)[0]
     if offset + 24 > len(blob) or blob[offset:offset + 4] != b"PE\0\0":
+        return
+    return offset
+
+
+def _sections(blob):
+    offset = pe_header(blob)
+    if offset is None:
         return
     count = struct.unpack_from("<H", blob, offset + 6)[0]
     optional_size = struct.unpack_from("<H", blob, offset + 20)[0]

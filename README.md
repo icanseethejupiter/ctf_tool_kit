@@ -1,7 +1,7 @@
 # flag_capturer
 
 Point it at a file or a string and it digs out CTF flags, peeling off layers of
-encoding until something looks like `flag{...}`. Pure Python, no dependencies.
+encoding until something looks like `flag{...}`. Pip installs the packet and .NET parsers along with the tool.
 
 ```
 $ flag_capturer challenge.bin
@@ -31,6 +31,12 @@ python -m flag_capturer .
 点号表示扫描当前文件夹及其子文件夹。只扫一个文件可以用 `python -m flag_capturer .\dist1.exe`。默认识别 flag、CTF 类前缀、HTB 和 THM。自定义前缀只写名字，如 `-p MYTEAM`。PowerShell 出现 `>>` 时按 Ctrl+C 回到命令行。
 
 The static scanner recognizes several MinGW x64 comparison layouts, including checks on separate slices of the input, repeating-key XOR with a known flag prefix, and small integer arrays. It also tries little-endian literals in Intel assembly listings. A hit is a candidate recovered from file contents.
+
+The CLI prints each input's detected format before scanning. For offline PCAP and PCAPNG (enhanced packet blocks), it scans individual UDP payloads and contiguous TCP bytes in each direction over Ethernet or raw IP. TCP gaps split the stream. TLS decryption and IP fragment reassembly are outside this decoder's scope.
+
+For managed PE assemblies, it checks the CLR header and metadata signature, resolves IL string literals, and evaluates adjacent literal arguments to two-, three-, and four-string `System.String.Concat` calls. Encoded strings then go through the usual decoder search. Analysis reads the file without executing the assembly.
+
+To add a format, implement `formats.base.Analyzer` with `identify` and `extract`, then register the instance in `formats.FORMATS`. Each extracted `Part` carries its bytes and provenance. Set `nested=True` for embedded files that should go through format identification again.
 
 ```
 flag_capturer                          # everything in the current folder
