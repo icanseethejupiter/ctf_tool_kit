@@ -11,8 +11,24 @@ from .finder import Finder
 BANNER = "\n  >> flag_capturer v{v}  -  peel the layers, grab the flag\n"
 
 
+def _enable_windows_ansi():
+    """Old Windows consoles (PowerShell 5.1) print colour codes as junk unless asked nicely."""
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.GetStdHandle(-11)
+        mode = ctypes.c_uint32()
+        if not k.GetConsoleMode(h, ctypes.byref(mode)):
+            return False
+        return bool(k.SetConsoleMode(h, mode.value | 0x0004))
+    except Exception:
+        return False
+
+
 def _color(on):
-    if not on:
+    if not on or os.environ.get("NO_COLOR") or not _enable_windows_ansi():
         return lambda s, c: s
     codes = {"g": "32;1", "d": "2", "y": "33", "r": "31"}
     return lambda s, c: f"\033[{codes[c]}m{s}\033[0m"
