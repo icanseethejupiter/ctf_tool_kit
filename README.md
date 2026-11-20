@@ -22,6 +22,16 @@ Then run `flag_capturer` (or the short `flagcap`). If the command is not found,
 
 ## Use
 
+在 Windows 资源管理器打开题目文件夹，在地址栏输入 `powershell` 并回车。运行：
+
+```powershell
+python -m flag_capturer .
+```
+
+点号表示扫描当前文件夹及其子文件夹。只扫一个文件可以用 `python -m flag_capturer .\dist1.exe`。工具默认识别 SEEKER。自定义前缀只写名字，如 `-p MYTEAM`。PowerShell 出现 `>>` 时按 Ctrl+C 回到命令行。
+
+The static scanner recognizes several MinGW x64 comparison layouts, including checks on separate slices of the input, repeating-key XOR with a known flag prefix, and small integer arrays. It also tries little-endian literals in Intel assembly listings. A hit is a candidate recovered from file contents.
+
 ```
 flag_capturer                          # everything in the current folder
 flag_capturer file.bin                 # a file

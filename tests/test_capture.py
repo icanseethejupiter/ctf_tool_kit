@@ -111,3 +111,16 @@ def test_pe_repeating_xor_base64():
 def test_pe_byte_shift_rot13():
     rotated = codecs.encode(FLAG.decode(), "rot13").encode()
     assert found(pe_with_array(b"\x09", bytes(v + 9 for v in rotated)))
+
+
+def test_xor_inferred_from_custom_prefix():
+    flag = b"EXAMPLE{another_key}"
+    key = b"\x83\x1c\x45"
+    cipher = bytes(v ^ key[i % len(key)] for i, v in enumerate(flag))
+    assert found(pe_with_array(key[:1], cipher), flag, prefixes=["EXAMPLE"])
+
+
+def test_separate_assembly_immediates():
+    data = b"mov rax, 0x637b67616c66abcd\nmov rbx, 0x7d646362\nret\n"
+    assert found(data, b"flag{cbcd}")
+    assert not found(data.replace(b"\nmov rbx", b"\nret\nmov rbx"), b"flag{cbcd}")

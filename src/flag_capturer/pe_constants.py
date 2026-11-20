@@ -1,13 +1,16 @@
 """Carve encoded text following small, zero-padded constants in PE data."""
+import base64
 import re
 import struct
+
+from .fragments import checked_fragments
 
 
 _TOKEN = re.compile(rb"[A-Za-z0-9+/]{8,}={0,2}")
 _SHIFTED_FLAG = re.compile(rb"[A-Za-z][A-Za-z0-9_]{1,19}\{[ -~]{1,200}?\}")
 
 
-def _data_sections(blob):
+def _sections(blob):
     if len(blob) < 64 or blob[:2] != b"MZ":
         return
     offset = struct.unpack_from("<I", blob, 60)[0]
@@ -20,15 +23,79 @@ def _data_sections(blob):
         return
     for i in range(count):
         header = table + i * 40
-        if blob[header:header + 8].rstrip(b"\0") not in (b".rdata", b".data"):
+        name = blob[header:header + 8].rstrip(b"\0")
+        if name not in (b".rdata", b".data", b".text"):
             continue
         size, start = struct.unpack_from("<II", blob, header + 16)
         if start + size <= len(blob):
-            yield memoryview(blob)[start:start + size]
+            rva = struct.unpack_from("<I", blob, header + 12)[0]
+            yield name, rva, memoryview(blob)[start:start + size]
 
 
-def encoded_constants(blob, xor=True):
-    for section in _data_sections(blob):
+def _periodic_key(data, plain):
+    observed = bytes(a ^ b for a, b in zip(data, plain))
+    if len(observed) != len(plain):
+        return
+    for length in range(2, len(observed) - 1):
+        if observed[length:] == observed[:-length]:
+            return observed[:length]
+
+
+def _xor(data, key):
+    return bytes(v ^ key[i % len(key)] for i, v in enumerate(data))
+
+
+def _array_candidates(section, prefixes, xor):
+    # C strings followed by an aligned byte-shift parameter.
+    for token in re.finditer(rb"(?<![^\x00])([!-~]{8,512})\x00{1,8}([^\x00])\x00{3}", section):
+        data, shift_byte = token.groups()
+        shift = shift_byte[0]
+        shifted = bytes((v - shift) % 256 for v in data)
+        if _TOKEN.fullmatch(shifted):
+            yield f"subtract({shift})", shifted
+        if not xor or not re.fullmatch(rb"(?:[0-9a-fA-F]{2}){8,}", data):
+            continue
+        cipher = bytes.fromhex(data.decode())
+        for prefix in prefixes:
+            # Only complete six-bit groups are known before the flag body.
+            head = bytes((v + shift) % 256 for v in prefix)
+            known = base64.b64encode(head)[:len(head) * 8 // 6]
+            key = _periodic_key(cipher, known)
+            if key:
+                encoded = _xor(cipher, key)
+                if len(encoded) % 4 == 0 and _TOKEN.fullmatch(encoded):
+                    plain = base64.b64decode(encoded)
+                    result = bytes((v - shift) % 256 for v in plain)
+                    if result.startswith(prefix) and _SHIFTED_FLAG.fullmatch(result):
+                        yield f"hex -> xor({key.hex()}) -> base64 -> subtract({shift})", result
+
+    # Small integers stored one per little-endian 32-bit word.
+    for run in re.finditer(rb"(?:[\x01-\xff].\x00\x00){8,220}", section, re.S):
+        words = [v for v, in struct.iter_unpack("<I", run.group())]
+        for prefix in prefixes:
+            if len(prefix) < 2 or len(words) < len(prefix) or prefix[0] == prefix[1]:
+                continue
+            scale, remainder = divmod(words[0] - words[1], prefix[0] - prefix[1])
+            if remainder or not 1 <= scale <= 32:
+                continue
+            bias = words[0] - scale * prefix[0]
+            decoded = bytearray()
+            for word in words:
+                value, rem = divmod(word - bias, scale)
+                if rem or not 32 <= value <= 126:
+                    break
+                decoded.append(value)
+            if decoded.startswith(prefix):
+                yield f"decode integer array (scale {scale}, offset {bias})", bytes(decoded)
+
+
+def encoded_constants(blob, xor=True, prefixes=()):
+    sections = list(_sections(blob))
+    yield from checked_fragments(sections, xor)
+    for name, _, section in sections:
+        if name == b".text":
+            continue
+        yield from _array_candidates(section[:65536], prefixes, xor)
         # A small constant can occupy a whole alignment slot before an array.
         for pos in range(0, min(len(section) - 16, 64 * 1024), 16):
             key = bytes(section[pos:pos + 16]).rstrip(b"\0")
@@ -42,6 +109,12 @@ def encoded_constants(blob, xor=True):
                 if token:
                     yield f"subtract({shift})", token.group()
             if xor:
+                for prefix in prefixes:
+                    periodic = _periodic_key(payload, prefix)
+                    if periodic:
+                        token = _SHIFTED_FLAG.match(_xor(payload, periodic))
+                        if token and token.group().startswith(prefix):
+                            yield f"repeating xor({periodic.hex()})", token.group()
                 decoded = bytes(v ^ key[i % len(key)] for i, v in enumerate(payload))
                 token = _TOKEN.match(decoded)
                 if token:

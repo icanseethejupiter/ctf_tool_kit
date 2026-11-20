@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 
 from .decoders import CARVERS, DECODERS, printable_ratio
 from .pe_constants import encoded_constants
+from .fragments import assembly_literals
 
 DEFAULT_PREFIXES = ["flag", "ctf", "htb", "thm", "seeker"]
 _BODY = re.compile(rb"\{[^{}\x00-\x1f\x7f-\xff]{1,200}\}")
@@ -69,6 +70,8 @@ class Finder:
                 n = (v + "{").encode()
                 sigs[bytes(n[k] ^ n[k - 1] for k in range(1, len(n)))] = n[0]
         self.xor_sigs = sigs
+        self.prefix_bytes = sorted({(v + "{").encode() for p in DEFAULT_PREFIXES + prefixes
+                                    for v in (p, p.lower(), p.upper(), p.capitalize())})
         self.max_depth = max_depth
         self.max_nodes = max_nodes
         self.xor = xor
@@ -158,10 +161,13 @@ class Finder:
             if len(chain) >= self.max_depth:
                 continue
             textish = printable_ratio(b) >= 0.95
+            if is_file and textish and b"mov" in b.lower() and b"0x" in b.lower():
+                for literal in assembly_literals(b):
+                    queue.append((literal, chain + ["join little-endian literals"], False, True))
             if is_file and b.startswith(b"PK\x03\x04"):
                 self._unzip(b, chain, queue)
             if is_file and not textish:
-                for name, decoded in encoded_constants(b, self.xor):
+                for name, decoded in encoded_constants(b, self.xor, self.prefix_bytes):
                     queue.append((decoded, chain + [name], False, True))
                 for s in self._strings(b):
                     queue.append((s, chain + ["strings"], False, False))
