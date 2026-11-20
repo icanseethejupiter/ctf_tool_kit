@@ -63,7 +63,7 @@ def main(argv=None) -> int:
         prog="flag_capturer",
         description="Dig CTF flags out of files or strings through layers of encoding "
                     "(base64/32/85, hex, binary, rot, xor, gzip/zlib, zip ...).")
-    ap.add_argument("targets", nargs="*", help="files or folders to scan, '-' for stdin")
+    ap.add_argument("targets", nargs="*", help="files or folders to scan (default: current folder), '-' for stdin")
     ap.add_argument("-s", "--string", action="append", default=[], help="scan this text directly")
     ap.add_argument("-p", "--prefix", action="append", default=[],
                     help="extra flag prefix, e.g. -p DUCTF -p picoCTF")
@@ -79,10 +79,8 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
 
     if not a.targets and not a.string:
-        if sys.stdin.isatty():
-            ap.print_help()
-            return 2
-        a.targets = ["-"]
+        # nothing given: read piped input, otherwise scan the folder you're standing in
+        a.targets = ["."] if sys.stdin.isatty() else ["-"]
 
     paint = _color(sys.stdout.isatty() and not a.json)
     if not (a.quiet or a.json):

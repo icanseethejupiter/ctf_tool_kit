@@ -23,6 +23,7 @@ Then run `flag_capturer` (or the short `flagcap`). If the command is not found,
 ## Use
 
 ```
+flag_capturer                          # everything in the current folder
 flag_capturer file.bin                 # a file
 flag_capturer ./challenge_folder       # every file in a folder
 flag_capturer -s "ZmxhZ3toaX0="        # a string

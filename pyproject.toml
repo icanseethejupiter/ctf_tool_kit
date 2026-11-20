@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flag-capturer"
-version = "0.1.1"
+version = "0.1.2"
 description = "Point it at a file or a string and it digs out CTF flags through layers of encoding."
 readme = "README.md"
 requires-python = ">=3.8"
