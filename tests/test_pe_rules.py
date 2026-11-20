@@ -74,6 +74,27 @@ def test_dropper_handout_and_variant():
     assert f"LAB{{{digest}_{host.decode()}_[Reflection.Assembly]::Load}}" in _flags(bytes(changed), "LAB")
 
 
+def test_ioc_walkthrough_prints_a_pasteable_verification():
+    import io
+    import sys
+    import tempfile
+    from contextlib import redirect_stdout
+    from flag_capturer.cli import main
+
+    with tempfile.TemporaryDirectory() as directory:
+        sample = Path(directory, "sample's copy.exe")
+        sample.write_bytes(_handout("dpcal"))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            assert main([str(sample), "-p", "LAB", "-e"]) == 0
+        text = output.getvalue()
+        assert text.index("iris   = ") < text.index("olive  = ") < text.index("celery = ")
+        code = text.split("\n@'\n")[1].split("\n'@ | python -\n")[0]
+        assert "[Reflection.Assembly]::Load" not in code
+        recovered = subprocess.check_output([sys.executable, "-"], input=code, text=True).strip()
+        assert recovered.startswith("LAB{") and "[+] " + recovered in text
+
+
 def test_replay_handout_and_variant():
     original = _handout("bonus-bonus")
     assert "SEEKER{i_let_you_hit_me}" in _flags(original, "SEEKER")

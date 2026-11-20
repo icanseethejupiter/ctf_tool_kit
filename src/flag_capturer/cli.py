@@ -113,7 +113,11 @@ def main(argv=None) -> int:
                 print("    How to find it by hand:")
                 for n, step in enumerate(info["steps"], 1):
                     safe = step.encode("ascii", "backslashreplace").decode("ascii")
-                    print(f"      {n}. " + safe.replace("\n", "\n         "))
+                    prose, marker, code = safe.partition("\n@'\n")
+                    print(f"      {n}. " + prose.replace("\n", "\n         "))
+                    if marker:
+                        # PowerShell 5.1 requires the closing here-string marker in column one.
+                        print("@'\n" + code)
                 recipe = info["cyberchef"]
                 if recipe:
                     print("    CyberChef recipe (original input):\n      " + recipe)

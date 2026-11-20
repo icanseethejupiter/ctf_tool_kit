@@ -168,6 +168,49 @@ def _transform(label, d):
     return f"Apply scanner step {label!r} to the preceding output; no recorded recipe template.", None
 
 
+def _ioc_steps(hit, d, nested):
+    if not {"offset", "length", "config_length", "field", "seed", "method_span"}.issubset(d) or "offset" not in d.get("config", {}):
+        return ["Trace the buffer and byte count passed to WriteFile.",
+                "Trace the host argument to InternetConnectA.",
+                "Inspect the written script for the assembly load call."]
+
+    prefix, body = hit.flag[:-1].split("{", 1)
+    digest, host, method = body.split("_", 2)
+    start, end = d["method_span"]
+    steps = []
+    if "va" in d:
+        steps.append(f"Ghidra: press G and enter {d['va']:#x} in the Listing.\n"
+                     "Right-click > References > Show References to Address."
+                     + (f" Open reference {d['xrefs'][0]:#x}." if d.get("xrefs") else "")
+                     + (f"\nIn the Decompile window, inspect function {d['function']:#x}." if "function" in d else ""))
+    steps.extend([
+        f"Decode both buffers. Restart i at 0 for each buffer.\n"
+        f"decoded[i] = stored[i] ^ (({d['seed']:#x} + i) & 0xff)",
+        f"iris   = {digest}\n"
+        f"Script: {_place(d)}. Follow its decoded buffer to WriteFile.\n"
+        f"Hash exactly the {d['length']} bytes written. Keep the first 16 lowercase SHA-256 digits.",
+        f"olive  = {host}\n"
+        f"Config: {_place(d['config'])}, {d['config_length']} bytes.\n"
+        f"Split the decoded config at NUL bytes. Field {d['field']} (counting from 0) supplies the InternetConnectA host.",
+        f"celery = {method}\n"
+        f"Open the decoded script at byte {start:#x}. Find the assembly load call there.\n"
+        "Copy the type and method with their original casing, stopping before the opening parenthesis.",
+    ])
+    filename = "extracted.exe" if nested or hit.source.startswith("<") else hit.source
+    preparation = "Save the current PE as extracted.exe. " if filename == "extracted.exe" else ""
+    steps.append(preparation + "Verify all three fields in PowerShell. Copy the entire block:\n"
+                 "@'\nfrom pathlib import Path\nimport hashlib\n"
+                 f"pe = Path({ascii(filename)}).read_bytes()\n"
+                 "def decode(start, size):\n"
+                 f"    return bytes(b ^ (({d['seed']:#x} + i) & 255) for i, b in enumerate(pe[start:start+size]))\n"
+                 f"script = decode({d['offset']:#x}, {d['length']})\n"
+                 f"iris = hashlib.sha256(script).hexdigest()[:16]\n"
+                 f"olive = decode({d['config']['offset']:#x}, {d['config_length']}).split(b'\\0')[{d['field']}].decode()\n"
+                 f"celery = script[{start:#x}:{end:#x}].decode()\n"
+                 f"print({ascii(prefix + '{')} + '_'.join((iris, olive, celery)) + '}}')\n'@ | python -")
+    return steps
+
+
 def _snippet(label, d):
     """Specialized rules consume binary structures rather than flat byte transforms."""
     if "target centers ->" in label:
@@ -185,17 +228,6 @@ def _snippet(label, d):
                 f"out = bytearray()\nfor b in data:\n    h ^= (h << {left}) & mask\n"
                 f"    h ^= h >> {right}\n    h ^= (h << {final}) & mask\n"
                 f"    out.append(b ^ ((h >> {d['byte_shift']}) & 255))\ndata = bytes(out)")
-    if label.startswith("IOC candidate:"):
-        if not {"length", "config_length", "config", "field", "seed", "method"}.issubset(d):
-            return "Trace WriteFile's buffer and byte count, InternetConnectA's host, and the assembly load in the written script. Buffer parameters unavailable."
-        return (f"In the Decompile window follow WriteFile's buffer and length, then InternetConnectA's host. "
-                f"Copy {d['length']} script bytes at {_place(d)} into raw and {d['config_length']} bytes "
-                f"at {_place(d['config'])} into cfg. Python:\nimport hashlib\n"
-                f"def decode(buf):\n    return bytes(v ^ (({d['seed']} + i) & 255) for i, v in enumerate(buf))\n"
-                f"script = decode(raw)\nhost = decode(cfg).split(b'\\0')[{d['field']}]\n"
-                "digest = hashlib.sha256(script).hexdigest()[:16].encode()\n"
-                f"method = {d['method']!r}\n"
-                "assert method in script\ndata = b'_'.join((digest, host, method))")
     affine = re.fullmatch(r"decode integer array \(scale (-?\d+), offset (-?\d+)\)", label)
     if affine:
         scale, bias = affine.groups()
@@ -274,6 +306,17 @@ def _snippet(label, d):
 def walkthrough(hit):
     evidence = hit.evidence or {}
     layers = evidence.get("layers", ())
+    if hit.chain and hit.chain[-1].startswith("IOC candidate:"):
+        # A wrapped IOC is terminal. For containers, retain the steps up to the PE.
+        if len(hit.chain) > 1:
+            from dataclasses import replace
+            parent = replace(hit, chain=hit.chain[:-1], evidence=dict(evidence, span=None))
+            steps = walkthrough(parent)["steps"]
+        else:
+            steps = []
+        detail = layers[-1] if len(layers) == len(hit.chain) else {}
+        steps.extend(_ioc_steps(hit, detail, len(hit.chain) > 1))
+        return {"steps": steps, "cyberchef": None}
     where = _place(evidence)
     steps = ["Open the original input in Ghidra" + (f"; start at {where}." if where else ".")]
     if "va" in evidence:
@@ -332,7 +375,7 @@ def walkthrough(hit):
                 recipe.append(_take(literal["offset"], literal["length"]) + "Decode_text('UTF-16LE (1200)')")
             else:
                 recipe.append(None)
-            if label.startswith(("IOC candidate:", "connect IPv4")):
+            if label.startswith("connect IPv4"):
                 steps.append(f"Wrap the recovered value as {hit.flag.split('{', 1)[0]}{{value}}.")
             continue
         for op in label.split(" -> "):

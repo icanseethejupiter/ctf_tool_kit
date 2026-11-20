@@ -71,14 +71,17 @@ class DroppedScriptRule:
             if not all(32 <= c <= 126 or c in b"\r\n\t" for c in head):
                 continue
             script = _decode(raw[:size], seed)
-            methods = set(_LOAD.findall(_NONCODE.sub(b" ", script)))
+            # Keep script byte offsets intact when masking comments and quoted strings.
+            code = _NONCODE.sub(lambda match: b" " * len(match[0]), script)
+            methods = {match[0]: match.span() for match in _LOAD.finditer(code)}
             if len(methods) != 1:
                 continue
             fields = _decode(config, seed).split(b"\0")
             if field < len(fields) and _HOST.fullmatch(fields[field]):
                 digest = hashlib.sha256(script).hexdigest()[:16].encode()
-                method = methods.pop()
+                method, method_span = methods.popitem()
                 body = b"_".join((digest, fields[field], method))
                 yield Part(f"IOC candidate: SHA-256 of {size} write bytes + config host + script call",
                            body, wrap=True, evidence=dict(detail or {}, seed=seed, field=field,
-                                                          length=size, config_length=len(config), method=method))
+                                                          length=size, config_length=len(config), method=method,
+                                                          method_span=method_span))
