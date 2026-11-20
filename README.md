@@ -57,6 +57,15 @@ other prefixes are still listed as `[?]` suggestions.
 **File formats** (the detected format is printed before each scan)
 - **Windows PE (MinGW x64):** constant arrays and split comparison fragments,
   repeating-key XOR on Base64 text, byte subtraction on flag-shaped text
+- **Dropped PowerShell IOC puzzles:** recognizes an indexed-XOR decoder feeding
+  a script and a NUL-separated configuration. Tracks the buffer and byte count
+  passed to a `WriteFile` wrapper and the configuration field passed to an
+  `InternetConnectA` wrapper. Formats the first 16 SHA-256 hex digits of the
+  written bytes, host and original assembly-load method spelling as a candidate.
+- **Deterministic aim puzzles:** recognizes a 64-bit linear congruential target
+  generator, two coordinate ranges, a multiply-XOR coordinate hash (XOR before
+  multiplication), and a three-shift XOR release loop. Replays the target
+  centers using constants from the image and checks the resulting flag syntax.
 - **.NET assemblies:** IL string literals, including adjacent literals joined by
   `String.Concat`; read statically, never executed
 - **PCAP / PCAPNG:** UDP payloads and reassembled TCP streams per direction
@@ -67,16 +76,21 @@ other prefixes are still listed as `[?]` suggestions.
 
 ## Limits
 
-It only finds flags whose bytes are in the file in some encoded form. Flags
-computed at runtime, checks against your input, encrypted data with an unknown
-key, or values that need branches followed are out of scope: use Ghidra.
-Every hit is a candidate recovered from file contents.
+Runtime-derived candidates require a recognized computation and recoverable
+inputs. The two native rules above recognize specific MinGW x64 instruction
+patterns and use PE unwind information to locate functions. Compiler changes,
+different algorithms, or inputs supplied by a remote service can require
+manual analysis. Each result includes the extraction path.
 
 ## Extending
 
 Implement `formats.base.Analyzer` (`identify` and `extract`) and register the
 instance in `formats.FORMATS`. Each extracted `Part` carries its bytes and
 provenance; set `nested=True` for embedded files that should be identified again.
+
+For an additional native PE puzzle family, implement `recognizes(data)` and
+`extract(image)` and register the rule in `formats.pe_rules.RULES`. The rules
+share a static image reader, import names and disassembled functions.
 
 ## Play fair
 

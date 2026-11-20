@@ -10,6 +10,7 @@ from .base import Analyzer, Part
 from .capture import CaptureAnalyzer
 from .elf import ELFAnalyzer, GhidraELFAnalyzer
 from .managed import ManagedAnalyzer
+from .pe_rules import native_findings
 
 
 class NativePEAnalyzer:
@@ -19,6 +20,7 @@ class NativePEAnalyzer:
     def extract(self, data, *, xor, prefixes):
         for label, value in encoded_constants(data, xor, prefixes):
             yield Part(label, value)
+        yield from native_findings(data, xor)
 
 
 class ZipAnalyzer:
