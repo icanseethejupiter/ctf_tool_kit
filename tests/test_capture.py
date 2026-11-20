@@ -3,6 +3,7 @@ import codecs
 import gzip
 import io
 import os
+import struct
 import zipfile
 import zlib
 
@@ -83,3 +84,30 @@ def test_custom_prefix():
 
 def test_nothing():
     assert scan_bytes(os.urandom(5000)) == []
+
+
+def pe_with_array(key, payload):
+    header = bytearray(512)
+    header[:2] = b"MZ"
+    struct.pack_into("<I", header, 60, 128)
+    header[128:132] = b"PE\0\0"
+    struct.pack_into("<H", header, 134, 1)
+    struct.pack_into("<H", header, 148, 240)
+    section = 128 + 24 + 240
+    header[section:section + 6] = b".rdata"
+    body = key.ljust(16, b"\0") + payload
+    struct.pack_into("<II", header, section + 16, len(body), len(header))
+    return bytes(header) + body
+
+
+def test_pe_repeating_xor_base64():
+    key = b"\xcc\xdd\xee"
+    text = base64.b64encode(FLAG[::-1])
+    data = pe_with_array(key, bytes(v ^ key[i % len(key)] for i, v in enumerate(text)))
+    assert found(data)
+    assert not found(data, xor=False)
+
+
+def test_pe_byte_shift_rot13():
+    rotated = codecs.encode(FLAG.decode(), "rot13").encode()
+    assert found(pe_with_array(b"\x09", bytes(v + 9 for v in rotated)))

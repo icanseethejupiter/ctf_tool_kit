@@ -39,6 +39,7 @@ flag_capturer file --json              # for scripts
 - base64 / base64url / base32 / base85 / ascii85, hex, binary, decimal, octal, URL encoding
 - rot13 plus every other Caesar shift, rot47, reversed text
 - single-byte XOR (all 255 keys, checked cheaply against known prefixes first)
+- PE data arrays following a short, zero-padded key on a 16-byte boundary. The scanner tries repeating-key XOR on Base64 text and byte subtraction on flag-shaped text. It recognizes the SEEKER prefix by default.
 - gzip / zlib / bz2 / lzma streams and zip archives
 - cutting base64/hex/binary-looking chunks out of longer text and trying them alone
 

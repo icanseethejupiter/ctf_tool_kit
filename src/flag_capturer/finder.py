@@ -9,8 +9,9 @@ import zipfile
 from dataclasses import dataclass, field
 
 from .decoders import CARVERS, DECODERS, printable_ratio
+from .pe_constants import encoded_constants
 
-DEFAULT_PREFIXES = ["flag", "ctf", "htb", "thm"]
+DEFAULT_PREFIXES = ["flag", "ctf", "htb", "thm", "seeker"]
 _BODY = re.compile(rb"\{[^{}\x00-\x1f\x7f-\xff]{1,200}\}")
 _WORD_END = re.compile(rb"[A-Za-z0-9_]{1,20}$")
 # a believable flag: a 3+ letter word (letters/digits/_) then a body with no spaces
@@ -58,7 +59,7 @@ class Finder:
                  xor=True, loose=False, min_string=6):
         prefixes = [p.rstrip("{") for p in (prefixes or [])]
         self.ctf_like = ("ctf",)
-        self.prefix_set = {"flag", "htb", "thm"} | {p.lower() for p in prefixes}
+        self.prefix_set = set(DEFAULT_PREFIXES) | {p.lower() for p in prefixes}
         self.custom = re.compile(regex.encode()) if regex else None
         self.loose = loose
         # xor signatures: xor of neighbouring bytes doesn't depend on the key
@@ -160,6 +161,8 @@ class Finder:
             if is_file and b.startswith(b"PK\x03\x04"):
                 self._unzip(b, chain, queue)
             if is_file and not textish:
+                for name, decoded in encoded_constants(b, self.xor):
+                    queue.append((decoded, chain + [name], False, True))
                 for s in self._strings(b):
                     queue.append((s, chain + ["strings"], False, False))
                 for s in self._utf16(b):
