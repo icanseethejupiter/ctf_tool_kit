@@ -109,7 +109,7 @@ def main(argv=None) -> int:
 
     if a.json:
         print(json.dumps([{"flag": h.flag, "source": h.source, "chain": h.chain} for h in found],
-                         ensure_ascii=False, indent=2))
+                         ensure_ascii=True, indent=2))
     elif not found:
         # always say so (on stderr in quiet mode) so silence never looks like a crash
         print(paint("[-] no flag found. try --loose, -p <PREFIX>, or a bigger -d", "y"),

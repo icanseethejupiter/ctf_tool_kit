@@ -36,6 +36,16 @@ The CLI prints each input's detected format before scanning. For offline PCAP an
 
 For managed PE assemblies, it checks the CLR header and metadata signature, resolves IL string literals, and evaluates adjacent literal arguments to two-, three-, and four-string `System.String.Concat` calls. Encoded strings then go through the usual decoder search. Analysis reads the file without executing the assembly.
 
+For a Linux x86-64 challenge asking for a callback IPv4 address, run
+`python -m flag_capturer ./sample -p MYTEAM`. The scanner resolves dynamic
+`connect` imports through the PLT or GOT and checks the address and length
+arguments. It can recover literal IPv4 socket addresses constructed on the
+stack or referenced from read-only memory. A Ghidra ELF64 text listing with
+instruction bytes and named external calls also supports the stack case.
+The result path labels the address as a formatted candidate. The wrapper
+comes from `-p`, defaulting to `flag`. Encrypted addresses, runtime DNS
+results, and values that require following branches are outside this rule.
+
 To add a format, implement `formats.base.Analyzer` with `identify` and `extract`, then register the instance in `formats.FORMATS`. Each extracted `Part` carries its bytes and provenance. Set `nested=True` for embedded files that should go through format identification again.
 
 ```

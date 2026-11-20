@@ -8,6 +8,7 @@ from ..decoders import printable_ratio
 from ..pe_constants import encoded_constants, pe_header
 from .base import Analyzer, Part
 from .capture import CaptureAnalyzer
+from .elf import ELFAnalyzer, GhidraELFAnalyzer
 from .managed import ManagedAnalyzer
 
 
@@ -53,4 +54,5 @@ class FormatRegistry:
         return ("text" if printable_ratio(data[:4096]) >= 0.95 else "binary"), None
 
 
-FORMATS = FormatRegistry((CaptureAnalyzer(), ManagedAnalyzer(), NativePEAnalyzer(), ZipAnalyzer()))
+FORMATS = FormatRegistry((CaptureAnalyzer(), ManagedAnalyzer(), NativePEAnalyzer(), ZipAnalyzer(),
+                          ELFAnalyzer(), GhidraELFAnalyzer()))

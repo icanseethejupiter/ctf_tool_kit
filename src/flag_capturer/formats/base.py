@@ -7,6 +7,8 @@ class Part:
     label: str
     data: bytes
     nested: bool = False
+    # A recovered value to present inside the user's chosen flag wrapper.
+    wrap: bool = False
 
 
 class Analyzer(Protocol):

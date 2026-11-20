@@ -58,6 +58,7 @@ class Finder:
                  xor=True, loose=False, min_string=6, formats=FORMATS):
         self.formats = formats
         prefixes = [p.rstrip("{") for p in (prefixes or [])]
+        self.answer_prefixes = [p for p in prefixes if p] or ["flag"]
         self.ctf_like = ("ctf",)
         self.prefix_set = set(DEFAULT_PREFIXES) | {p.lower() for p in prefixes}
         self.custom = re.compile(regex.encode()) if regex else None
@@ -168,6 +169,11 @@ class Finder:
                 if analyzer:
                     parts = analyzer.extract(b, xor=self.xor, prefixes=self.prefix_bytes)
                     for part in itertools.islice(parts, max(0, self.max_nodes - nodes)):
+                        if part.wrap:
+                            for prefix in self.answer_prefixes:
+                                self._add(prefix + "{" + part.data.decode("ascii") + "}",
+                                          chain + [part.label], source)
+                            continue
                         queue.append((part.data, chain + [part.label], part.nested, True))
             if is_file and not textish:
                 for s in self._strings(b):
