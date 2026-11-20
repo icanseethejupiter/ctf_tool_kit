@@ -13,6 +13,8 @@ from .decoders import CARVERS, DECODERS, printable_ratio
 DEFAULT_PREFIXES = ["flag", "ctf", "htb", "thm"]
 _BODY = re.compile(rb"\{[^{}\x00-\x1f\x7f-\xff]{1,200}\}")
 _WORD_END = re.compile(rb"[A-Za-z0-9_]{1,20}$")
+# a believable flag: a 3+ letter word (letters/digits/_) then a body with no spaces
+_LOOKS_LIKE = re.compile(r"[A-Za-z][A-Za-z0-9_]{2,19}\{[!-|~]{4,200}\}")
 XOR_LIMIT = 8 * 1024 * 1024
 _XOR_TABLES = [bytes(c ^ k for c in range(256)) for k in range(256)]
 _LOWER = b"abcdefghijklmnopqrstuvwxyz"
@@ -71,13 +73,14 @@ class Finder:
         self.xor = xor
         self.min_string = min_string
         self.hits: dict = {}
+        self.maybe: dict = {}  # WORD{...} with an unknown prefix
 
     # ---------- matching ----------
     def _ok_prefix(self, word):
         w = word.lower()
         return w.endswith(self.ctf_like) or w in self.prefix_set
 
-    def _match(self, b, chain, source):
+    def _match(self, b, chain, source, guessed=False):
         if b"{" in b:
             # start from each brace (cheap) and look back for the prefix word
             for m in _BODY.finditer(b):
@@ -88,28 +91,30 @@ class Finder:
                 word = w.group().decode("latin-1")
                 # trim to the longest tail that is a known prefix (e.g. "xxflag" -> "flag")
                 hit = next((word[k:] for k in range(len(word)) if self._ok_prefix(word[k:])), None)
-                if hit is None and self.loose and len(word) >= 2 and len(m.group()) >= 6:
-                    hit = word
                 if hit is not None:
                     self._add(hit + m.group().decode("latin-1"), chain, source)
+                elif not guessed and _LOOKS_LIKE.fullmatch(word + m.group().decode("latin-1")):
+                    # unknown prefix: keep as a "maybe" (never from brute force, that's all noise)
+                    self._add(word + m.group().decode("latin-1"), chain, source, self.maybe)
         if self.custom:
             for m in self.custom.finditer(b):
                 self._add(m.group().decode("latin-1"), chain, source)
 
-    def _add(self, flag, chain, source):
-        old = self.hits.get(flag)
+    def _add(self, flag, chain, source, into=None):
+        into = self.hits if into is None else into
+        old = into.get(flag)
         if old is None or len(chain) < len(old.chain):
-            self.hits[flag] = Hit(flag, list(chain), source)
+            into[flag] = Hit(flag, list(chain), source)
 
     def _brute(self, b, chain, source):
         if not b:
             return
-        self._match(b[::-1], chain + ["reverse"], source)
+        self._match(b[::-1], chain + ["reverse"], source, True)
         # caesar shifts keep the braces, so no braces means nothing to find
         if b"{" in b and b"}" in b and re.search(rb"[A-Za-z]", b):
             for n, table in _ROT_TABLES.items():
-                self._match(b.translate(table), chain + [f"rot{n}"], source)
-            self._match(b.translate(_ROT47), chain + ["rot47"], source)
+                self._match(b.translate(table), chain + [f"rot{n}"], source, True)
+            self._match(b.translate(_ROT47), chain + ["rot47"], source, True)
         if not self.xor or len(b) > XOR_LIMIT:
             return
         keys = set()
@@ -122,7 +127,7 @@ class Finder:
                 pos = diff.find(sig, pos + 1)
         for k in sorted(keys):
             if k:
-                self._match(b.translate(_XOR_TABLES[k]), chain + [f"xor(0x{k:02x})"], source)
+                self._match(b.translate(_XOR_TABLES[k]), chain + [f"xor(0x{k:02x})"], source, True)
 
     # ---------- search ----------
     def scan(self, data: bytes, source: str = "<input>"):
@@ -145,7 +150,8 @@ class Finder:
                     continue
                 slices += 1
             seen.add(key)
-            self._match(b, chain, source)
+            # after a rot13/reverse step, an unknown-prefix WORD{...} is almost surely noise
+            self._match(b, chain, source, guessed=any(c in ("rot13", "reverse") for c in chain))
             if fresh:  # substrings of an already brute-forced parent were covered by it
                 self._brute(b, chain, source)
             if len(chain) >= self.max_depth:
@@ -176,7 +182,15 @@ class Finder:
                     queue.append((out, chain + [name], compressed, fresh or name not in ("rot13", "reverse")))
             if textish and len(b) > 16:
                 self._carve(b, chain, queue)
+        if self.loose:
+            for k, v in self.maybe.items():
+                self.hits.setdefault(k, v)
+        for k in self.hits:
+            self.maybe.pop(k, None)
         return sorted(self.hits.values(), key=lambda h: (len(h.chain), h.flag))
+
+    def maybes(self):
+        return sorted(self.maybe.values(), key=lambda h: (len(h.chain), h.flag))
 
     def _strings(self, b):
         return re.findall(rb"[\x20-\x7e\t]{%d,}" % self.min_string, b)
