@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+
+from . import __version__
+from .finder import Finder
+
+BANNER = "\n  >> flag_capturer v{v}  -  peel the layers, grab the flag\n"
+
+
+def _color(on):
+    if not on:
+        return lambda s, c: s
+    codes = {"g": "32;1", "d": "2", "y": "33", "r": "31"}
+    return lambda s, c: f"\033[{codes[c]}m{s}\033[0m"
+
+
+def _targets(paths, max_size):
+    for p in paths:
+        if p == "-":
+            yield "<stdin>", sys.stdin.buffer.read()
+        elif os.path.isdir(p):
+            for root, _, files in os.walk(p):
+                for f in sorted(files):
+                    fp = os.path.join(root, f)
+                    try:
+                        if os.path.getsize(fp) <= max_size:
+                            with open(fp, "rb") as fh:
+                                yield fp, fh.read()
+                    except OSError:
+                        continue
+        elif os.path.isfile(p):
+            if os.path.getsize(p) > max_size:
+                print(f"skip {p}: larger than --max-size", file=sys.stderr)
+                continue
+            with open(p, "rb") as fh:
+                yield p, fh.read()
+        else:
+            print(f"not found: {p}", file=sys.stderr)
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(
+        prog="flag_capturer",
+        description="Dig CTF flags out of files or strings through layers of encoding "
+                    "(base64/32/85, hex, binary, rot, xor, gzip/zlib, zip ...).")
+    ap.add_argument("targets", nargs="*", help="files or folders to scan, '-' for stdin")
+    ap.add_argument("-s", "--string", action="append", default=[], help="scan this text directly")
+    ap.add_argument("-p", "--prefix", action="append", default=[],
+                    help="extra flag prefix, e.g. -p DUCTF -p picoCTF")
+    ap.add_argument("-r", "--regex", help="your own flag regex (Python syntax)")
+    ap.add_argument("-d", "--depth", type=int, default=5, help="max decoding layers (default 5)")
+    ap.add_argument("--max-nodes", type=int, default=20000, help="search budget per target")
+    ap.add_argument("--max-size", type=int, default=50, help="skip files bigger than N MB (default 50)")
+    ap.add_argument("--no-xor", action="store_true", help="skip single-byte xor brute force")
+    ap.add_argument("--loose", action="store_true", help="also match any WORD{...} pattern")
+    ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument("-q", "--quiet", action="store_true", help="print flags only")
+    ap.add_argument("-V", "--version", action="version", version=f"flag_capturer {__version__}")
+    a = ap.parse_args(argv)
+
+    if not a.targets and not a.string:
+        if sys.stdin.isatty():
+            ap.print_help()
+            return 2
+        a.targets = ["-"]
+
+    paint = _color(sys.stdout.isatty() and not a.json)
+    if not (a.quiet or a.json):
+        print(paint(BANNER.format(v=__version__), "d"))
+
+    items = [(f"<string {i + 1}>", s.encode()) for i, s in enumerate(a.string)]
+    items_iter = list(items) + list(_targets(a.targets, a.max_size * 1024 * 1024))
+    found = []
+    for source, data in items_iter:
+        f = Finder(prefixes=a.prefix, regex=a.regex, max_depth=a.depth,
+                   max_nodes=a.max_nodes, xor=not a.no_xor, loose=a.loose)
+        hits = f.scan(data, source)
+        found += hits
+        if a.json:
+            continue
+        for h in hits:
+            if a.quiet:
+                print(h.flag)
+            else:
+                print(paint("[+] ", "g") + paint(h.flag, "g"))
+                print(paint(f"    {h.source}  via  {h.path()}", "d"))
+
+    if a.json:
+        print(json.dumps([{"flag": h.flag, "source": h.source, "chain": h.chain} for h in found],
+                         ensure_ascii=False, indent=2))
+    elif not found and not a.quiet:
+        print(paint("[-] no flag found. try --loose, -p <PREFIX>, or a bigger -d", "y"))
+    return 0 if found else 1

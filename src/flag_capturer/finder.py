@@ -1,0 +1,216 @@
+"""Breadth-first search through decodings until something looks like a flag."""
+from __future__ import annotations
+
+import heapq
+import io
+import itertools
+import re
+import zipfile
+from dataclasses import dataclass, field
+
+from .decoders import CARVERS, DECODERS, printable_ratio
+
+DEFAULT_PREFIXES = ["flag", "ctf", "htb", "thm"]
+_BODY = re.compile(rb"\{[^{}\x00-\x1f\x7f-\xff]{1,200}\}")
+_WORD_END = re.compile(rb"[A-Za-z0-9_]{1,20}$")
+XOR_LIMIT = 8 * 1024 * 1024
+_XOR_TABLES = [bytes(c ^ k for c in range(256)) for k in range(256)]
+_LOWER = b"abcdefghijklmnopqrstuvwxyz"
+_UPPER = _LOWER.upper()
+_ROT_TABLES = {
+    n: bytes.maketrans(_LOWER + _UPPER, _LOWER[n:] + _LOWER[:n] + _UPPER[n:] + _UPPER[:n])
+    for n in range(1, 26)
+}
+_ROT47 = bytes.maketrans(bytes(range(33, 127)), bytes(range(80, 127)) + bytes(range(33, 80)))
+
+
+class _Queue:
+    """Shallow and readable first, so junk decodings can't starve the real lead."""
+
+    def __init__(self):
+        self._h, self._n = [], itertools.count()
+
+    def append(self, item):
+        b, chain = item[0], item[1]
+        heapq.heappush(self._h, (len(chain), -round(printable_ratio(b[:4096]), 2), next(self._n), item))
+
+    def popleft(self):
+        return heapq.heappop(self._h)[-1]
+
+    def __bool__(self):
+        return bool(self._h)
+
+
+@dataclass
+class Hit:
+    flag: str
+    chain: list = field(default_factory=list)
+    source: str = ""
+
+    def path(self) -> str:
+        return " -> ".join(self.chain) if self.chain else "plain"
+
+
+class Finder:
+    def __init__(self, prefixes=None, regex=None, max_depth=5, max_nodes=20000,
+                 xor=True, loose=False, min_string=6):
+        prefixes = [p.rstrip("{") for p in (prefixes or [])]
+        self.ctf_like = ("ctf",)
+        self.prefix_set = {"flag", "htb", "thm"} | {p.lower() for p in prefixes}
+        self.custom = re.compile(regex.encode()) if regex else None
+        self.loose = loose
+        # xor signatures: xor of neighbouring bytes doesn't depend on the key
+        sigs = {}
+        for p in DEFAULT_PREFIXES + prefixes:
+            for v in {p, p.lower(), p.upper(), p.capitalize()}:
+                n = (v + "{").encode()
+                sigs[bytes(n[k] ^ n[k - 1] for k in range(1, len(n)))] = n[0]
+        self.xor_sigs = sigs
+        self.max_depth = max_depth
+        self.max_nodes = max_nodes
+        self.xor = xor
+        self.min_string = min_string
+        self.hits: dict = {}
+
+    # ---------- matching ----------
+    def _ok_prefix(self, word):
+        w = word.lower()
+        return w.endswith(self.ctf_like) or w in self.prefix_set
+
+    def _match(self, b, chain, source):
+        if b"{" in b:
+            # start from each brace (cheap) and look back for the prefix word
+            for m in _BODY.finditer(b):
+                start = m.start()
+                w = _WORD_END.search(b, max(0, start - 20), start)
+                if not w:
+                    continue
+                word = w.group().decode("latin-1")
+                # trim to the longest tail that is a known prefix (e.g. "xxflag" -> "flag")
+                hit = next((word[k:] for k in range(len(word)) if self._ok_prefix(word[k:])), None)
+                if hit is None and self.loose and len(word) >= 2 and len(m.group()) >= 6:
+                    hit = word
+                if hit is not None:
+                    self._add(hit + m.group().decode("latin-1"), chain, source)
+        if self.custom:
+            for m in self.custom.finditer(b):
+                self._add(m.group().decode("latin-1"), chain, source)
+
+    def _add(self, flag, chain, source):
+        old = self.hits.get(flag)
+        if old is None or len(chain) < len(old.chain):
+            self.hits[flag] = Hit(flag, list(chain), source)
+
+    def _brute(self, b, chain, source):
+        if not b:
+            return
+        self._match(b[::-1], chain + ["reverse"], source)
+        # caesar shifts keep the braces, so no braces means nothing to find
+        if b"{" in b and b"}" in b and re.search(rb"[A-Za-z]", b):
+            for n, table in _ROT_TABLES.items():
+                self._match(b.translate(table), chain + [f"rot{n}"], source)
+            self._match(b.translate(_ROT47), chain + ["rot47"], source)
+        if not self.xor or len(b) > XOR_LIMIT:
+            return
+        keys = set()
+        n = int.from_bytes(b, "big")
+        diff = (n ^ (n >> 8)).to_bytes(len(b), "big")  # diff[i] = b[i] ^ b[i-1]
+        for sig, first in self.xor_sigs.items():
+            pos = diff.find(sig, 1)
+            while pos != -1 and len(keys) < 256:
+                keys.add(b[pos - 1] ^ first)
+                pos = diff.find(sig, pos + 1)
+        for k in sorted(keys):
+            if k:
+                self._match(b.translate(_XOR_TABLES[k]), chain + [f"xor(0x{k:02x})"], source)
+
+    # ---------- search ----------
+    def scan(self, data: bytes, source: str = "<input>"):
+        queue = _Queue()
+        queue.append((data, [], True, True))
+        seen = set()
+        nodes = 0   # decoded/new data: the expensive kind, limited by max_nodes
+        slices = 0  # plain substrings (strings/carve): cheap, much higher cap
+        while queue:
+            b, chain, is_file, fresh = queue.popleft()
+            key = hash(b)
+            if key in seen or not b:
+                continue
+            if fresh:
+                if nodes >= self.max_nodes:
+                    continue
+                nodes += 1
+            else:
+                if slices >= 20 * self.max_nodes:
+                    continue
+                slices += 1
+            seen.add(key)
+            self._match(b, chain, source)
+            if fresh:  # substrings of an already brute-forced parent were covered by it
+                self._brute(b, chain, source)
+            if len(chain) >= self.max_depth:
+                continue
+            textish = printable_ratio(b) >= 0.95
+            if is_file and b.startswith(b"PK\x03\x04"):
+                self._unzip(b, chain, queue)
+            if is_file and not textish:
+                for s in self._strings(b):
+                    queue.append((s, chain + ["strings"], False, False))
+                for s in self._utf16(b):
+                    queue.append((s, chain + ["utf16"], False, False))
+            for name, fn, strict in DECODERS:
+                if not textish and name not in ("gzip", "zlib", "bz2", "lzma"):
+                    continue
+                try:
+                    out = fn(b)
+                except Exception:
+                    out = None
+                if not out or out == b:
+                    continue
+                sliced = any(c in ("strings", "carve") for c in chain)
+                r = printable_ratio(out)
+                compressed = name in ("gzip", "zlib", "bz2", "lzma")
+                # slices of a big binary give lots of accidental "valid" decodings: keep only sensible ones
+                if (strict and not sliced) or compressed or r >= (0.75 if strict else 0.9):
+                    # rot13/reverse of a slice is still just a rearranged slice: the parent's brute force covered it
+                    queue.append((out, chain + [name], compressed, fresh or name not in ("rot13", "reverse")))
+            if textish and len(b) > 16:
+                self._carve(b, chain, queue)
+        return sorted(self.hits.values(), key=lambda h: (len(h.chain), h.flag))
+
+    def _strings(self, b):
+        return re.findall(rb"[\x20-\x7e\t]{%d,}" % self.min_string, b)
+
+    def _utf16(self, b):
+        return [m.decode("utf-16le").encode()
+                for m in re.findall(rb"(?:[\x20-\x7e]\x00){%d,}" % self.min_string, b)]
+
+    def _carve(self, b, chain, queue):
+        whole = b.strip()
+        count = 0
+        for rx in CARVERS:
+            for m in rx.finditer(b):
+                tok = m.group().strip()
+                if tok != whole:
+                    queue.append((tok, chain + ["carve"], False, False))
+                    count += 1
+                    if count >= 64:
+                        return
+
+    def _unzip(self, b, chain, queue):
+        try:
+            with zipfile.ZipFile(io.BytesIO(b)) as z:
+                for info in z.infolist()[:200]:
+                    if info.is_dir() or info.file_size > 50 * 1024 * 1024:
+                        continue
+                    try:
+                        queue.append((z.read(info), chain + [f"zip:{info.filename}"], True, True))
+                    except RuntimeError:  # encrypted member
+                        continue
+        except zipfile.BadZipFile:
+            pass
+
+
+def scan_bytes(data: bytes, source: str = "<input>", **kwargs):
+    """Convenience wrapper: return a list of Hit for the given bytes."""
+    return Finder(**kwargs).scan(data, source)
