@@ -27,13 +27,16 @@ def _slot(operand):
 class ConnectIPv4Rule:
     symbol = "connect"
 
-    def findings(self, address, history, read_constant):
-        ip = self.recover(history, read_constant)
+    def findings(self, address, history, read_constant, listing_offset=None):
+        detail = {"va": address, "role": "connect call"}
+        if listing_offset is not None:
+            detail["offset"] = listing_offset
+        ip = self.recover(history, read_constant, detail)
         if ip:
             label = f"connect IPv4 at {address:#x} (formatted candidate)"
-            yield Part(label, ip.encode(), wrap=True)
+            yield Part(label, ip.encode(), wrap=True, evidence=detail)
 
-    def recover(self, history, read_constant):
+    def recover(self, history, read_constant, detail=None):
         registers = {}
         memory = {}
         for end, op, args, callee in history:
@@ -78,10 +81,14 @@ class ConnectIPv4Rule:
         if base == "image":
             literal = read_constant(offset, 8) if read_constant else b""
             if len(literal) == 8 and literal[:2] == b"\x02\x00":
+                if detail is not None:
+                    detail.update(va=offset+4, role="sin_addr", callsite=detail["va"], octets=literal[4:])
                 return str(IPv4Address(literal[4:]))
             return
         fields = [memory.get((base, offset + i)) for i in (0, 1, 4, 5, 6, 7)]
         if fields[:2] == [2, 0] and None not in fields:
+            if detail is not None:
+                detail.update(stack_base=base, displacement=offset, octets=bytes(fields[2:]))
             return str(IPv4Address(bytes(fields[2:])))
 
 
@@ -98,11 +105,11 @@ _CALL_RULES = {rule.symbol: rule for rule in (ConnectIPv4Rule(),)}
 def _call_findings(instructions, read_constant=None):
     history = deque(maxlen=48)
     end = None
-    for address, size, op, args, callee in instructions:
+    for address, size, op, args, callee, listing_offset in instructions:
         if address != end:
             history.clear()
         if op == "call" and callee in _CALL_RULES:
-            yield from _CALL_RULES[callee].findings(address, history, read_constant)
+            yield from _CALL_RULES[callee].findings(address, history, read_constant, listing_offset)
         end = address + size
         history.append((end, op, args, callee))
 
@@ -191,7 +198,7 @@ class ELFAnalyzer:
                     name = stubs.get(int(args, 16))
                 else:
                     name = slots.get(_rip_address(addr + size, args))
-            yield addr, size, op, args, name
+            yield addr, size, op, args, name, None
 
 
 def _rip_address(end, args):
@@ -216,7 +223,11 @@ class GhidraELFAnalyzer:
     def _instructions(self, data):
         decoder = _decoder()
         row = None
-        for line in data.splitlines() + [b""]:
+        position = 0
+        for line in data.splitlines(keepends=True) + [b""]:
+            start = position
+            position += len(line)
+            line = line.rstrip(b"\r\n")
             continuation = self._continued.match(line)
             if row and continuation:
                 if len(raw) <= 15:
@@ -226,7 +237,8 @@ class GhidraELFAnalyzer:
                 ins = next(decoder.disasm_lite(bytes(raw), int(row[1], 16), 1), None)
                 if ins and ins[1] == len(raw):
                     symbol = re.match(rb"<EXTERNAL>::([A-Za-z0-9_]+)", row[4])
-                    yield (*ins, symbol[1].decode() if symbol else None)
+                    yield (*ins, symbol[1].decode() if symbol else None, row_offset)
             row = self._row.match(line)
             if row:
+                row_offset = start + row.start(1)
                 raw = bytearray.fromhex(row[2].decode())

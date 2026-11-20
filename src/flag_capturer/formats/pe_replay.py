@@ -1,6 +1,6 @@
 """Recover the release produced by an exact-center run of a deterministic aim game."""
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 from .base import Part
 
@@ -80,16 +80,19 @@ class CoordinateReplayRule:
                 size = int(length[1], 0) + 1
                 if 5 <= size <= 224:
                     releases[state[1]] = (image.read(int(table[1], 0), size), int(table[2], 0),
-                                          [int(n, 0) for _, n in shifts])
+                                          [int(n, 0) for _, n in shifts], int(table[1], 0), address)
         for sequence in self._sequences(image, generators):
             for target in hashes.keys() & releases.keys():
-                cipher, byte_shift, steps = releases[target]
+                cipher, byte_shift, steps, rva, function = releases[target]
                 for seed in seeds.get(target, ()):
                     digest = sequence.hash_centers(seed, hashes[target])
                     plain = _release(cipher, digest, byte_shift, steps)
                     if re.fullmatch(rb"[A-Za-z][A-Za-z0-9_]{1,19}\{[^{}\x00-\x1f\x7f-\xff]{1,200}\}", plain):
                         yield Part(f"{sequence.rounds} target centers -> coordinate hash -> xorshift release",
-                                   plain)
+                                   plain, evidence=dict(asdict(sequence), digest_seed=seed, prime=hashes[target],
+                                                        byte_shift=byte_shift, shifts=steps, rva=rva,
+                                                        length=len(cipher), function_rva=function,
+                                                        xref_rvas=image.xrefs.get(rva, [])))
 
     def _sequences(self, image, generators):
         for code in image.functions.values():

@@ -59,7 +59,7 @@ def _array_candidates(section, prefixes, xor):
         shift = shift_byte[0]
         shifted = bytes((v - shift) % 256 for v in data)
         if _TOKEN.fullmatch(shifted):
-            yield f"subtract({shift})", shifted
+            yield f"subtract({shift})", shifted, token.start(1), len(data)
         if not xor or not re.fullmatch(rb"(?:[0-9a-fA-F]{2}){8,}", data):
             continue
         cipher = bytes.fromhex(data.decode())
@@ -74,7 +74,7 @@ def _array_candidates(section, prefixes, xor):
                     plain = base64.b64decode(encoded)
                     result = bytes((v - shift) % 256 for v in plain)
                     if result.startswith(prefix) and _SHIFTED_FLAG.fullmatch(result):
-                        yield f"hex -> xor({key.hex()}) -> base64 -> subtract({shift})", result
+                        yield f"hex -> xor({key.hex()}) -> base64 -> subtract({shift})", result, token.start(1), len(data)
 
     # Small integers stored one per little-endian 32-bit word.
     for run in re.finditer(rb"(?:[\x01-\xff].\x00\x00){8,220}", section, re.S):
@@ -93,16 +93,17 @@ def _array_candidates(section, prefixes, xor):
                     break
                 decoded.append(value)
             if decoded.startswith(prefix):
-                yield f"decode integer array (scale {scale}, offset {bias})", bytes(decoded)
+                yield f"decode integer array (scale {scale}, offset {bias})", bytes(decoded), run.start(), 4*len(decoded)
 
 
-def encoded_constants(blob, xor=True, prefixes=()):
+def constant_evidence(blob, xor=True, prefixes=()):
     sections = list(_sections(blob))
-    yield from checked_fragments(sections, xor)
-    for name, _, section in sections:
+    yield from checked_fragments(sections, xor, evidence=True)
+    for name, base, section in sections:
         if name == b".text":
             continue
-        yield from _array_candidates(section[:65536], prefixes, xor)
+        for label, value, offset, length in _array_candidates(section[:65536], prefixes, xor):
+            yield label, value, {"rva": base+offset, "length": length, "slice": True}
         # A small constant can occupy a whole alignment slot before an array.
         for pos in range(0, min(len(section) - 16, 64 * 1024), 16):
             key = bytes(section[pos:pos + 16]).rstrip(b"\0")
@@ -114,15 +115,20 @@ def encoded_constants(blob, xor=True, prefixes=()):
                 decoded = bytes((v - shift) % 256 for v in payload)
                 token = _SHIFTED_FLAG.match(decoded)
                 if token:
-                    yield f"subtract({shift})", token.group()
+                    yield f"subtract({shift})", token.group(), {"rva": base+pos+16, "length": token.end(), "slice": True}
             if xor:
                 for prefix in prefixes:
                     periodic = _periodic_key(payload, prefix)
                     if periodic:
                         token = _SHIFTED_FLAG.match(_xor(payload, periodic))
                         if token and token.group().startswith(prefix):
-                            yield f"repeating xor({periodic.hex()})", token.group()
+                            yield f"repeating xor({periodic.hex()})", token.group(), {"rva": base+pos+16, "length": token.end(), "slice": True}
                 decoded = bytes(v ^ key[i % len(key)] for i, v in enumerate(payload))
                 token = _TOKEN.match(decoded)
                 if token:
-                    yield f"xor({key.hex()})", token.group()
+                    yield f"xor({key.hex()})", token.group(), {"rva": base+pos+16, "length": token.end(), "slice": True}
+
+
+def encoded_constants(blob, xor=True, prefixes=()):
+    for label, value, _ in constant_evidence(blob, xor, prefixes):
+        yield label, value

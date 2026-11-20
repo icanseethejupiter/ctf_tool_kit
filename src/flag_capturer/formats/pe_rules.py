@@ -19,6 +19,7 @@ class NativeImage:
         self.sections = [(s.VirtualAddress, memoryview(data)[s.PointerToRawData:s.PointerToRawData+s.SizeOfRawData])
                          for s in pe.sections]
         self.functions = {}
+        self.xrefs = {}
         decoder = Cs(CS_ARCH_X86, CS_MODE_64)
         budget = 2 * 1024 * 1024
         for entry in getattr(pe, "DIRECTORY_ENTRY_EXCEPTION", []):
@@ -32,6 +33,7 @@ class NativeImage:
                 if ref:
                     delta = int(ref[2], 0)
                     rva = addr + size + (delta if ref[1] == "+" else -delta)
+                    self.xrefs.setdefault(rva, []).append(addr)
                     name = self.imports.get(rva, hex(rva))
                     args = args.replace(ref[0], "@" + name)
                 lines.append((op + " " + args).rstrip())

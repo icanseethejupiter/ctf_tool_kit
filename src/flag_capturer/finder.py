@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 from .decoders import CARVERS, DECODERS, printable_ratio
 from .formats import FORMATS
-from .fragments import assembly_literals
+from .fragments import assembly_evidence
 
 DEFAULT_PREFIXES = ["flag", "ctf", "htb", "thm"]
 _BODY = re.compile(rb"\{[^{}\x00-\x1f\x7f-\xff]{1,200}\}")
@@ -48,6 +48,7 @@ class Hit:
     flag: str
     chain: list = field(default_factory=list)
     source: str = ""
+    evidence: dict = field(default=None, compare=False, repr=False)
 
     def path(self) -> str:
         return " -> ".join(self.chain) if self.chain else "plain"
@@ -55,7 +56,8 @@ class Hit:
 
 class Finder:
     def __init__(self, prefixes=None, regex=None, max_depth=5, max_nodes=20000,
-                 xor=True, loose=False, min_string=6, formats=FORMATS):
+                 xor=True, loose=False, min_string=6, formats=FORMATS, explain=False):
+        self.explain = explain
         self.formats = formats
         prefixes = [p.rstrip("{") for p in (prefixes or [])]
         self.answer_prefixes = [p for p in prefixes if p] or ["flag"]
@@ -96,19 +98,26 @@ class Finder:
                 # trim to the longest tail that is a known prefix (e.g. "xxflag" -> "flag")
                 hit = next((word[k:] for k in range(len(word)) if self._ok_prefix(word[k:])), None)
                 if hit is not None:
-                    self._add(hit + m.group().decode("latin-1"), chain, source)
+                    self._add(hit + m.group().decode("latin-1"), chain, source,
+                              span=(start-len(hit), m.end(), len(b)))
                 elif not guessed and _LOOKS_LIKE.fullmatch(word + m.group().decode("latin-1")):
                     # unknown prefix: keep as a "maybe" (never from brute force, that's all noise)
-                    self._add(word + m.group().decode("latin-1"), chain, source, self.maybe)
+                    self._add(word + m.group().decode("latin-1"), chain, source, self.maybe,
+                              span=(start-len(word), m.end(), len(b)))
         if self.custom:
             for m in self.custom.finditer(b):
-                self._add(m.group().decode("latin-1"), chain, source)
+                self._add(m.group().decode("latin-1"), chain, source, span=(*m.span(), len(b)))
 
-    def _add(self, flag, chain, source, into=None):
+    def _add(self, flag, chain, source, into=None, span=None, last=None):
         into = self.hits if into is None else into
         old = into.get(flag)
         if old is None or len(chain) < len(old.chain):
-            into[flag] = Hit(flag, list(chain), source)
+            evidence = None
+            if self.explain:
+                from .explain import hit_evidence
+                layers = self._trace + ((last or {},) if len(chain) > len(self._trace) else ())
+                evidence = hit_evidence(self._input, layers, chain, span)
+            into[flag] = Hit(flag, list(chain), source, evidence)
 
     def _brute(self, b, chain, source):
         if not b:
@@ -136,12 +145,13 @@ class Finder:
     # ---------- search ----------
     def scan(self, data: bytes, source: str = "<input>"):
         queue = _Queue()
-        queue.append((data, [], True, True))
+        self._input = data if self.explain else None
+        queue.append((data, [], True, True, ()))
         seen = set()
         nodes = 0   # decoded/new data: the expensive kind, limited by max_nodes
         slices = 0  # plain substrings (strings/carve): cheap, much higher cap
         while queue:
-            b, chain, is_file, fresh = queue.popleft()
+            b, chain, is_file, fresh, self._trace = queue.popleft()
             key = hash(b)
             if key in seen or not b:
                 continue
@@ -162,24 +172,31 @@ class Finder:
                 continue
             textish = printable_ratio(b) >= 0.95
             if is_file and textish and b"mov" in b.lower() and b"0x" in b.lower():
-                for literal in assembly_literals(b):
-                    queue.append((literal, chain + ["join little-endian literals"], False, True))
+                for literal, detail in assembly_evidence(b):
+                    self._enqueue(queue, literal, chain, "join little-endian literals", False, True, detail)
             if is_file:
                 _, analyzer = self.formats.identify(b)
                 if analyzer:
                     parts = analyzer.extract(b, xor=self.xor, prefixes=self.prefix_bytes)
                     for part in itertools.islice(parts, max(0, self.max_nodes - nodes)):
+                        detail = getattr(part, "evidence", None)
+                        if self.explain and detail:
+                            detail = dict(detail, container=b)
                         if part.wrap:
                             for prefix in self.answer_prefixes:
                                 self._add(prefix + "{" + part.data.decode("ascii") + "}",
-                                          chain + [part.label], source)
+                                          chain + [part.label], source, last=detail)
                             continue
-                        queue.append((part.data, chain + [part.label], part.nested, True))
+                        self._enqueue(queue, part.data, chain, part.label, part.nested, True, detail)
             if is_file and not textish:
-                for s in self._strings(b):
-                    queue.append((s, chain + ["strings"], False, False))
-                for s in self._utf16(b):
-                    queue.append((s, chain + ["utf16"], False, False))
+                for label, matches in (("strings", self._strings(b)), ("utf16", self._utf16(b))):
+                    for m in matches:
+                        value = m.group()
+                        if label == "utf16":
+                            value = value.decode("utf-16le").encode()
+                        self._enqueue(queue, value, chain, label, False, False,
+                                      {"container": b, "offset": m.start(), "length": m.end()-m.start(),
+                                       "preview": value[:12]} if self.explain else None)
             for name, fn, strict in DECODERS:
                 if not textish and name not in ("gzip", "zlib", "bz2", "lzma"):
                     continue
@@ -195,7 +212,8 @@ class Finder:
                 # slices of a big binary give lots of accidental "valid" decodings: keep only sensible ones
                 if (strict and not sliced) or compressed or r >= (0.75 if strict else 0.9):
                     # rot13/reverse of a slice is still just a rearranged slice: the parent's brute force covered it
-                    queue.append((out, chain + [name], compressed, fresh or name not in ("rot13", "reverse")))
+                    self._enqueue(queue, out, chain, name, compressed, fresh or name not in ("rot13", "reverse"),
+                                  {"xz": b.startswith(b"\xfd7zXZ")} if self.explain and name == "lzma" else None)
             if textish and len(b) > 16:
                 self._carve(b, chain, queue)
         if self.loose:
@@ -209,11 +227,14 @@ class Finder:
         return sorted(self.maybe.values(), key=lambda h: (len(h.chain), h.flag))
 
     def _strings(self, b):
-        return re.findall(rb"[\x20-\x7e\t]{%d,}" % self.min_string, b)
+        return re.finditer(rb"[\x20-\x7e\t]{%d,}" % self.min_string, b)
 
     def _utf16(self, b):
-        return [m.decode("utf-16le").encode()
-                for m in re.findall(rb"(?:[\x20-\x7e]\x00){%d,}" % self.min_string, b)]
+        return re.finditer(rb"(?:[\x20-\x7e]\x00){%d,}" % self.min_string, b)
+
+    def _enqueue(self, queue, value, chain, label, is_file, fresh, detail=None):
+        trace = self._trace + (detail or {},) if self.explain else ()
+        queue.append((value, chain + [label], is_file, fresh, trace))
 
     def _carve(self, b, chain, queue):
         whole = b.strip()
@@ -222,7 +243,9 @@ class Finder:
             for m in rx.finditer(b):
                 tok = m.group().strip()
                 if tok != whole:
-                    queue.append((tok, chain + ["carve"], False, False))
+                    self._enqueue(queue, tok, chain, "carve", False, False,
+                                  {"offset": m.start(), "length": len(tok), "preview": tok[:12]}
+                                  if self.explain else None)
                     count += 1
                     if count >= 64:
                         return

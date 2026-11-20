@@ -33,7 +33,13 @@ flag_capturer file -p DUCTF -p picoCTF   # extra flag prefixes (name only)
 flag_capturer file -r "SECRET-[0-9]{6}"  # your own regex
 flag_capturer file --loose               # also show anything shaped like WORD{...}
 flag_capturer file --json                # for scripts
+flag_capturer challenge.exe -e            # Ghidra steps and a CyberChef recipe under each hit
 ```
+
+`-e` / `--explain` records the winning path's byte ranges and known addresses.
+Load the original input into CyberChef to apply the printed recipe. Specialized
+steps include manual or Python instructions. With `--json --explain`, each hit
+also has `steps` and `cyberchef` (null when the complete path needs manual work).
 
 Built-in prefixes: `flag`, anything ending in `CTF`, `HTB`, `THM`. Flags with
 other prefixes are still listed as `[?]` suggestions.

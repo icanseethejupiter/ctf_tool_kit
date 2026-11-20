@@ -73,13 +73,13 @@ class ManagedAnalyzer:
                     continue
                 try:
                     body = read_method_body_from_bytes(image.get_data(method.Rva, 65536))
-                    yield from self._literals(body.instructions, image.net, str(method.Name))
+                    yield from self._literals(body.instructions, image.net, str(method.Name), method.Rva)
                 except (MethodBodyFormatError, pefile.PEFormatError, IndexError, ValueError):
                     continue
         except (pefile.PEFormatError, dnfile.errors.dnFormatError, ValueError, struct.error):
             return
 
-    def _literals(self, instructions, metadata, name):
+    def _literals(self, instructions, metadata, name, method_rva):
         stack = []
         for instruction in instructions:
             op = instruction.opcode.name
@@ -87,16 +87,22 @@ class ManagedAnalyzer:
                 item = metadata.user_strings.get(instruction.operand.rid)
                 if item is not None and item.value is not None:
                     value = item.value.encode("utf-8")
-                    stack.append(value)
-                    yield Part(f".NET {name} ldstr", value)
+                    literal = (instruction.operand.value, item.rva + item.item_size.raw_size,
+                               int(item.item_size) - int(item.flag is not None), method_rva + instruction.offset)
+                    stack.append((value, [literal]))
+                    yield Part(f".NET {name} ldstr", value, evidence={"function_rva": method_rva,
+                               "rva": literal[1], "literals": [literal], "xref_rvas": [literal[3]]})
                     continue
             elif op == "call":
                 count = _concat_arity(metadata.mdtables, instruction.operand)
                 if count and len(stack) >= count:
-                    value = b"".join(stack[-count:])
+                    args = stack[-count:]
+                    value = b"".join(v for v, _ in args)
+                    literals = [entry for _, items in args for entry in items]
                     del stack[-count:]
-                    stack.append(value)
-                    yield Part(f".NET {name} String.Concat", value)
+                    stack.append((value, literals))
+                    yield Part(f".NET {name} String.Concat", value, evidence={"function_rva": method_rva,
+                               "rva": literals[0][1], "literals": literals, "xref_rvas": [x[3] for x in literals]})
                     continue
             if op != "nop":
                 stack.clear()

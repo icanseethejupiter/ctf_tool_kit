@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable, Protocol
 
 
@@ -9,6 +9,7 @@ class Part:
     nested: bool = False
     # A recovered value to present inside the user's chosen flag wrapper.
     wrap: bool = False
+    evidence: dict = field(default=None, compare=False, repr=False)
 
 
 class Analyzer(Protocol):

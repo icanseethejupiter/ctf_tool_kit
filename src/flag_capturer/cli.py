@@ -8,6 +8,7 @@ import sys
 
 from . import __version__
 from .finder import Finder
+from .explain import walkthrough
 
 BANNER = "\n  >> flag_capturer v{v}  -  peel the layers, grab the flag\n"
 
@@ -75,6 +76,7 @@ def main(argv=None) -> int:
     ap.add_argument("--no-xor", action="store_true", help="skip single-byte xor brute force")
     ap.add_argument("--loose", action="store_true", help="also match any WORD{...} pattern")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument("-e", "--explain", action="store_true", help="show a reproducible walkthrough for each hit")
     ap.add_argument("-q", "--quiet", action="store_true", help="print flags only")
     ap.add_argument("-V", "--version", action="version", version=f"flag_capturer {__version__}")
     a = ap.parse_args(argv)
@@ -92,7 +94,7 @@ def main(argv=None) -> int:
     found = []
     for source, data in items_iter:
         f = Finder(prefixes=a.prefix, regex=a.regex, max_depth=a.depth,
-                   max_nodes=a.max_nodes, xor=not a.no_xor, loose=a.loose)
+                   max_nodes=a.max_nodes, xor=not a.no_xor, loose=a.loose, explain=a.explain)
         if not (a.quiet or a.json):
             label, _ = f.formats.identify(data)
             print(f"[{label}] {source}")
@@ -106,9 +108,19 @@ def main(argv=None) -> int:
             else:
                 print(paint("[+] ", "g") + paint(h.flag, "g"))
                 print(paint(f"    {h.source}  via  {h.path()}", "d"))
+            if a.explain:
+                info = walkthrough(h)
+                print("    How to find it by hand:")
+                for n, step in enumerate(info["steps"], 1):
+                    safe = step.encode("ascii", "backslashreplace").decode("ascii")
+                    print(f"      {n}. " + safe.replace("\n", "\n         "))
+                recipe = info["cyberchef"]
+                if recipe:
+                    print("    CyberChef recipe (original input):\n      " + recipe)
 
     if a.json:
-        print(json.dumps([{"flag": h.flag, "source": h.source, "chain": h.chain} for h in found],
+        print(json.dumps([dict(flag=h.flag, source=h.source, chain=h.chain,
+                               **(walkthrough(h) if a.explain else {})) for h in found],
                          ensure_ascii=True, indent=2))
     elif not found:
         # always say so (on stderr in quiet mode) so silence never looks like a crash

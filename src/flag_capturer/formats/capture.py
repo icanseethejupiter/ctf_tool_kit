@@ -21,7 +21,7 @@ def _frames(data):
             pos += 16
             if size > len(data) - pos:
                 return
-            yield 0, link, data[pos:pos + size]
+            yield 0, link, data[pos:pos + size], pos
             pos += size
         return
     pos = 0
@@ -44,7 +44,7 @@ def _frames(data):
         elif kind == 6 and size >= 32:
             iface, _, _, cap = struct.unpack_from(endian + "IIII", data, pos + 8)
             if iface < len(links) and cap <= size - 32:
-                yield (section, iface), links[iface], data[pos + 28:pos + 28 + cap]
+                yield (section, iface), links[iface], data[pos + 28:pos + 28 + cap], pos + 28
         pos = end
 
 
@@ -53,23 +53,27 @@ class TCPStream:
         self.origin = seq
         self.segments = []
 
-    def add(self, seq, payload):
+    def add(self, seq, payload, packet):
         offset = ((seq - self.origin + 2**31) % 2**32) - 2**31
-        self.segments.append((offset, payload))
+        self.segments.append((offset, payload, packet))
 
     def chunks(self):
         end = None
         chunk = bytearray()
-        for offset, payload in sorted(self.segments, key=lambda entry: entry[0]):
+        packets = []
+        for offset, payload, packet in sorted(self.segments, key=lambda entry: entry[0]):
             if end is None or offset > end:
                 if chunk:
-                    yield bytes(chunk)
+                    yield bytes(chunk), packets
+                    packets = []
                 chunk.clear()
                 end = offset
             chunk.extend(payload[max(0, end - offset):])
+            if offset + len(payload) > end:
+                packets.append((*packet, max(0, end - offset)))
             end = max(end, offset + len(payload))
         if chunk:
-            yield bytes(chunk)
+            yield bytes(chunk), packets
 
 
 class CaptureAnalyzer:
@@ -82,7 +86,7 @@ class CaptureAnalyzer:
         import dpkt
 
         streams = {}
-        for index, (iface, link, frame) in enumerate(_frames(data), 1):
+        for index, (iface, link, frame, pos) in enumerate(_frames(data), 1):
             try:
                 if link == 1:
                     ip = dpkt.ethernet.Ethernet(frame).data
@@ -98,7 +102,8 @@ class CaptureAnalyzer:
                     continue
                 segment = ip.data
                 if isinstance(segment, dpkt.udp.UDP):
-                    yield Part(f"UDP packet {index}", bytes(segment.data))
+                    yield Part(f"UDP packet {index}", bytes(segment.data),
+                               evidence={"offset": pos, "role": "frame start", "link": link, "frame_size": len(frame)})
                 elif isinstance(segment, dpkt.tcp.TCP):
                     key = (iface, ip.src, segment.sport, ip.dst, segment.dport)
                     seq = segment.seq
@@ -110,7 +115,7 @@ class CaptureAnalyzer:
                     if segment.data:
                         if key not in streams:
                             streams[key] = TCPStream(seq)
-                        streams[key].add(seq, bytes(segment.data))
+                        streams[key].add(seq, bytes(segment.data), (index, pos, link, len(frame), seq))
             except (dpkt.UnpackError, ValueError, IndexError, struct.error):
                 continue
         for key, stream in streams.items():
@@ -120,5 +125,5 @@ class CaptureAnalyzer:
         from ipaddress import ip_address
         _, src, sport, dst, dport = key
         label = f"TCP {ip_address(src)}:{sport} -> {ip_address(dst)}:{dport}"
-        for chunk in stream.chunks():
-            yield Part(label, chunk)
+        for chunk, packets in stream.chunks():
+            yield Part(label, chunk, evidence={"offset": packets[0][1], "role": "frame start", "packets": packets})

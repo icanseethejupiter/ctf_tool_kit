@@ -1,11 +1,12 @@
 """Ordered analyzers shared by the CLI and the recursive scanner."""
 import io
+import struct
 import zipfile
 import zlib
 from typing import Iterable
 
 from ..decoders import printable_ratio
-from ..pe_constants import encoded_constants, pe_header
+from ..pe_constants import constant_evidence, pe_header
 from .base import Analyzer, Part
 from .capture import CaptureAnalyzer
 from .elf import ELFAnalyzer, GhidraELFAnalyzer
@@ -18,8 +19,8 @@ class NativePEAnalyzer:
         return "Windows PE" if pe_header(data) is not None else ""
 
     def extract(self, data, *, xor, prefixes):
-        for label, value in encoded_constants(data, xor, prefixes):
-            yield Part(label, value)
+        for label, value, detail in constant_evidence(data, xor, prefixes):
+            yield Part(label, value, evidence=detail)
         yield from native_findings(data, xor)
 
 
@@ -39,7 +40,11 @@ class ZipAnalyzer:
                     except (RuntimeError, zipfile.BadZipFile, EOFError, zlib.error):
                         continue
                     remaining -= len(value)
-                    yield Part(f"zip:{item.filename}", value, nested=True)
+                    pos = item.header_offset
+                    name_len, extra_len = struct.unpack_from("<HH", data, pos + 26)
+                    yield Part(f"zip:{item.filename}", value, nested=True,
+                               evidence={"offset": pos + 30 + name_len + extra_len, "length": item.compress_size,
+                                         "compression": item.compress_type, "member_header": pos})
         except zipfile.BadZipFile:
             return
 

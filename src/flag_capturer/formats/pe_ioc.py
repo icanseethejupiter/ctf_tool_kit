@@ -36,7 +36,7 @@ class DroppedScriptRule:
         network = {addr for addr, code in image.functions.items()
                    if re.search(r"mov rdx, qword ptr \[rbp \+ 0x10\]\n(?:[^\n]+\n){0,12}"
                                 r"mov rax, qword ptr @InternetConnectA\ncall rax", code)}
-        for code in image.functions.values():
+        for function, code in image.functions.items():
             writes = [(local, writers[int(addr, 0)]) for local, addr in _WRITE_CALL.findall(code)
                       if int(addr, 0) in writers]
             hosts = {local for local, addr in _HOST_CALL.findall(code) if int(addr, 0) in network}
@@ -49,18 +49,21 @@ class DroppedScriptRule:
                 if 1 <= size <= 65536 and "add edx, ecx\nxor eax, edx" in body:
                     raw = image.read(int(addr, 0), size)
                     if raw:
-                        buffers[local] = (decoder, raw)
+                        buffers[local] = (decoder, raw, int(addr, 0))
             for config, index, getter, dst in _FIELD.findall(code):
                 if dst not in hosts or config not in buffers:
                     continue
                 if "add rax, 1\nadd qword ptr" not in image.functions.get(int(getter, 0), ""):
                     continue
-                decoder, config_bytes = buffers[config]
+                decoder, config_bytes, config_rva = buffers[config]
                 for source, size in writes:
                     if source in buffers and buffers[source][0] == decoder:
-                        yield from self._correlate(config_bytes, int(index, 0), buffers[source][1], size)
+                        detail = {"function_rva": function, "decoder_rva": int(decoder, 0),
+                                  "rva": buffers[source][2], "config_rva": config_rva,
+                                  "xref_rvas": image.xrefs.get(buffers[source][2], [])}
+                        yield from self._correlate(config_bytes, int(index, 0), buffers[source][1], size, detail)
 
-    def _correlate(self, config, field, raw, size):
+    def _correlate(self, config, field, raw, size, detail=None):
         if not 1 <= size <= len(raw):
             return
         for seed in range(256):
@@ -74,6 +77,8 @@ class DroppedScriptRule:
             fields = _decode(config, seed).split(b"\0")
             if field < len(fields) and _HOST.fullmatch(fields[field]):
                 digest = hashlib.sha256(script).hexdigest()[:16].encode()
-                body = b"_".join((digest, fields[field], methods.pop()))
+                method = methods.pop()
+                body = b"_".join((digest, fields[field], method))
                 yield Part(f"IOC candidate: SHA-256 of {size} write bytes + config host + script call",
-                           body, wrap=True)
+                           body, wrap=True, evidence=dict(detail or {}, seed=seed, field=field,
+                                                          length=size, config_length=len(config), method=method))
